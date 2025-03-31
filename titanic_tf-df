@@ -1,1 +1,2992 @@
-{"metadata":{"kernelspec":{"language":"python","display_name":"Python 3","name":"python3"},"language_info":{"name":"python","version":"3.7.12","mimetype":"text/x-python","codemirror_mode":{"name":"ipython","version":3},"pygments_lexer":"ipython3","nbconvert_exporter":"python","file_extension":".py"},"kaggle":{"accelerator":"none","dataSources":[{"sourceId":3136,"databundleVersionId":26502,"sourceType":"competition"}],"dockerImageVersionId":30458,"isInternetEnabled":true,"language":"python","sourceType":"notebook","isGpuEnabled":false}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"markdown","source":"# Titanic competition with TensorFlow Decision Forests\n\nThis notebook will take you through the steps needed to train a baseline Gradient Boosted Trees Model using TensorFlow Decision Forests and creating a submission on the Titanic competition. \n\nThis notebook shows:\n\n1. How to do some basic pre-processing. For example, the passenger names will be tokenized, and ticket names will be splitted in parts.\n1. How to train a Gradient Boosted Trees (GBT) with default parameters\n1. How to train a GBT with improved default parameters\n1. How to tune the parameters of a GBTs\n1. How to train and ensemble many GBTs","metadata":{}},{"cell_type":"markdown","source":"# Imports dependencies","metadata":{}},{"cell_type":"code","source":"import numpy as np\nimport pandas as pd\nimport os\n\nimport tensorflow as tf\nimport tensorflow_decision_forests as tfdf\n\nprint(f\"Found TF-DF {tfdf.__version__}\")","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"# Load dataset","metadata":{}},{"cell_type":"code","source":"tf_learn = pd.read_csv(\"/kaggle/input/titanic/train.csv\")\ntf_test = pd.read_csv(\"/kaggle/input/titanic/test.csv\")\n\ntf_learn.head(10)","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"# Prepare dataset\n\nWe will apply the following transformations on the dataset.\n\n1. Tokenize the names. For example, \"Braund, Mr. Owen Harris\" will become [\"Braund\", \"Mr.\", \"Owen\", \"Harris\"].\n2. Extract any prefix in the ticket. For example ticket \"STON/O2. 3101282\" will become \"STON/O2.\" and 3101282.","metadata":{}},{"cell_type":"code","source":"def preprocess(df):\n    df = df.copy()\n    \n    def normalize_name(x):\n        return \" \".join([v.strip(\",()[].\\\"'\") for v in x.split(\" \")])\n    \n    def ticket_number(x):\n        return x.split(\" \")[-1]\n        \n    def ticket_item(x):\n        items = x.split(\" \")\n        if len(items) == 1:\n            return \"NONE\"\n        return \"_\".join(items[0:-1])\n    \n    df[\"Name\"] = df[\"Name\"].apply(normalize_name)\n    df[\"Ticket_number\"] = df[\"Ticket\"].apply(ticket_number)\n    df[\"Ticket_item\"] = df[\"Ticket\"].apply(ticket_item)                     \n    return df\n    \npreprocessed_tf_learn = preprocess(tf_learn)\npreprocessed_tf_test = preprocess(tf_test)\n\npreprocessed_tf_learn.head(5)","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"Let's keep the list of the input features of the model. Notably, we don't want to train our model on the \"PassengerId\" and \"Ticket\" features.","metadata":{}},{"cell_type":"code","source":"input_features = list(preprocessed_tf_learn.columns)\ninput_features.remove(\"Ticket\")\ninput_features.remove(\"PassengerId\")\ninput_features.remove(\"Survived\")\n#input_features.remove(\"Ticket_number\")\n\nprint(f\"Input features: {input_features}\")","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"# Convert Pandas dataset to TensorFlow Dataset","metadata":{}},{"cell_type":"code","source":"def tokenize_names(features, labels=None):\n    \"\"\"Divide the names into tokens. TF-DF can consume text tokens natively.\"\"\"\n    features[\"Name\"] =  tf.strings.split(features[\"Name\"])\n    return features, labels\n\ntrain_ds = tfdf.keras.pd_dataframe_to_tf_dataset(preprocessed_tf_learn,label=\"Survived\").map(tokenize_names)\nserving_ds = tfdf.keras.pd_dataframe_to_tf_dataset(preprocessed_tf_test).map(tokenize_names)","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"# Train model with default parameters\n\n### Train model\n\nFirst, we are training a GradientBoostedTreesModel model with the default parameters.","metadata":{}},{"cell_type":"code","source":"model = tfdf.keras.GradientBoostedTreesModel(\n    verbose=0, # Very few logs\n    features=[tfdf.keras.FeatureUsage(name=n) for n in input_features],\n    exclude_non_specified_features=True, # Only use the features in \"features\"\n    random_seed=1234,\n)\nmodel.fit(train_ds)\n\nself_evaluation = model.make_inspector().evaluation()\nprint(f\"Accuracy: {self_evaluation.accuracy} Loss:{self_evaluation.loss}\")","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"# Train model with improved default parameters\n\nNow you'll use some specific parameters when creating the GBT model","metadata":{}},{"cell_type":"code","source":"model = tfdf.keras.GradientBoostedTreesModel(\n    verbose=0, # Very few logs\n    features=[tfdf.keras.FeatureUsage(name=n) for n in input_features],\n    exclude_non_specified_features=True, # Only use the features in \"features\"\n    \n    #num_trees=2000,\n    \n    # Only for GBT.\n    # A bit slower, but great to understand the model.\n    # compute_permutation_variable_importance=True,\n    \n    # Change the default hyper-parameters\n    # hyperparameter_template=\"benchmark_rank1@v1\",\n    \n    #num_trees=1000,\n    #tuner=tuner\n    \n    min_examples=1,\n    categorical_algorithm=\"RANDOM\",\n    #max_depth=4,\n    shrinkage=0.05,\n    #num_candidate_attributes_ratio=0.2,\n    split_axis=\"SPARSE_OBLIQUE\",\n    sparse_oblique_normalization=\"MIN_MAX\",\n    sparse_oblique_num_projections_exponent=2.0,\n    num_trees=2000,\n    #validation_ratio=0.0,\n    random_seed=1234,\n    \n)\nmodel.fit(train_ds)\n\nself_evaluation = model.make_inspector().evaluation()\nprint(f\"Accuracy: {self_evaluation.accuracy} Loss:{self_evaluation.loss}\")","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"Let's look at the model and you can also notice the information about variable importance that the model figured out","metadata":{}},{"cell_type":"code","source":"model.summary()","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"# Make predictions","metadata":{}},{"cell_type":"code","source":"def prediction_to_kaggle_format(model, threshold=0.5):\n    proba_survive = model.predict(serving_ds, verbose=0)[:,0]\n    return pd.DataFrame({\n        \"PassengerId\": tf_test[\"PassengerId\"],\n        \"Survived\": (proba_survive >= threshold).astype(int)\n    })\n\ndef make_submission(kaggle_predictions):\n    path=\"/kaggle/working/submission.csv\"\n    kaggle_predictions.to_csv(path, index=False)\n    print(f\"Submission exported to {path}\")\n    \nkaggle_predictions = prediction_to_kaggle_format(model)\nmake_submission(kaggle_predictions)\n!head /kaggle/working/submission.csv","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"# Training a model with hyperparameter tuning\n\nHyper-parameter tuning is enabled by specifying the tuner constructor argument of the model. The tuner object contains all the configuration of the tuner (search space, optimizer, trial and objective).\n","metadata":{}},{"cell_type":"code","source":"tuner = tfdf.tuner.RandomSearch(num_trials=1000)\ntuner.choice(\"min_examples\", [2, 5, 7, 10])\ntuner.choice(\"categorical_algorithm\", [\"CART\", \"RANDOM\"])\n\nlocal_search_space = tuner.choice(\"growing_strategy\", [\"LOCAL\"])\nlocal_search_space.choice(\"max_depth\", [3, 4, 5, 6, 8])\n\nglobal_search_space = tuner.choice(\"growing_strategy\", [\"BEST_FIRST_GLOBAL\"], merge=True)\nglobal_search_space.choice(\"max_num_nodes\", [16, 32, 64, 128, 256])\n\n#tuner.choice(\"use_hessian_gain\", [True, False])\ntuner.choice(\"shrinkage\", [0.02, 0.05, 0.10, 0.15])\ntuner.choice(\"num_candidate_attributes_ratio\", [0.2, 0.5, 0.9, 1.0])\n\n\ntuner.choice(\"split_axis\", [\"AXIS_ALIGNED\"])\noblique_space = tuner.choice(\"split_axis\", [\"SPARSE_OBLIQUE\"], merge=True)\noblique_space.choice(\"sparse_oblique_normalization\",\n                     [\"NONE\", \"STANDARD_DEVIATION\", \"MIN_MAX\"])\noblique_space.choice(\"sparse_oblique_weights\", [\"BINARY\", \"CONTINUOUS\"])\noblique_space.choice(\"sparse_oblique_num_projections_exponent\", [1.0, 1.5])\n\n# Tune the model. Notice the `tuner=tuner`.\ntuned_model = tfdf.keras.GradientBoostedTreesModel(tuner=tuner)\ntuned_model.fit(train_ds, verbose=0)\n\ntuned_self_evaluation = tuned_model.make_inspector().evaluation()\nprint(f\"Accuracy: {tuned_self_evaluation.accuracy} Loss:{tuned_self_evaluation.loss}\")","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"In the last line in the cell above, you can see the accuracy is higher than previously with default parameters and parameters set by hand.\n\nThis is the main idea behing hyperparameter tuning.\n\nFor more information you can follow this tutorial: [Automated hyper-parameter tuning](https://www.tensorflow.org/decision_forests/tutorials/automatic_tuning_colab)","metadata":{}},{"cell_type":"markdown","source":"# Making an ensemble\n\nHere you'll create 100 models with different seeds and combine their results\n\nThis approach removes a little bit the random aspects related to creating ML models\n\nIn the GBT creation is used the `honest` parameter. It will use different training examples to infer the structure and the leaf values. This regularization technique trades examples for bias estimates.","metadata":{}},{"cell_type":"code","source":"predictions = None\nnum_predictions = 0\n\nfor i in range(100):\n    print(f\"i:{i}\")\n    # Possible models: GradientBoostedTreesModel or RandomForestModel\n    model = tfdf.keras.GradientBoostedTreesModel(\n        verbose=0, # Very few logs\n        features=[tfdf.keras.FeatureUsage(name=n) for n in input_features],\n        exclude_non_specified_features=True, # Only use the features in \"features\"\n\n        #min_examples=1,\n        #categorical_algorithm=\"RANDOM\",\n        ##max_depth=4,\n        #shrinkage=0.05,\n        ##num_candidate_attributes_ratio=0.2,\n        #split_axis=\"SPARSE_OBLIQUE\",\n        #sparse_oblique_normalization=\"MIN_MAX\",\n        #sparse_oblique_num_projections_exponent=2.0,\n        #num_trees=2000,\n        ##validation_ratio=0.0,\n        random_seed=i,\n        honest=True,\n    )\n    model.fit(train_ds)\n    \n    sub_predictions = model.predict(serving_ds, verbose=0)[:,0]\n    if predictions is None:\n        predictions = sub_predictions\n    else:\n        predictions += sub_predictions\n    num_predictions += 1\n\npredictions/=num_predictions\n\nkaggle_predictions = pd.DataFrame({\n        \"PassengerId\": tf_test[\"PassengerId\"],\n        \"Survived\": (predictions >= 0.5).astype(int)\n    })\n\nmake_submission(kaggle_predictions)","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"# What is next\n\nIf you want to learn more about TensorFlow Decision Forests and its advanced features, you can follow the official documentation [here](https://www.tensorflow.org/decision_forests) ","metadata":{}}]}
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "c3fc0131",
+   "metadata": {
+    "papermill": {
+     "duration": 0.0058,
+     "end_time": "2025-03-31T11:16:18.495171",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:18.489371",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Titanic competition with TensorFlow Decision Forests\n",
+    "\n",
+    "This notebook will take you through the steps needed to train a baseline Gradient Boosted Trees Model using TensorFlow Decision Forests and creating a submission on the Titanic competition. \n",
+    "\n",
+    "This notebook shows:\n",
+    "\n",
+    "1. How to do some basic pre-processing. For example, the passenger names will be tokenized, and ticket names will be splitted in parts.\n",
+    "1. How to train a Gradient Boosted Trees (GBT) with default parameters\n",
+    "1. How to train a GBT with improved default parameters\n",
+    "1. How to tune the parameters of a GBTs\n",
+    "1. How to train and ensemble many GBTs"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "a49c58d1",
+   "metadata": {
+    "papermill": {
+     "duration": 0.004258,
+     "end_time": "2025-03-31T11:16:18.504128",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:18.499870",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Imports dependencies"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "eaa1dfda",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:18.514881Z",
+     "iopub.status.busy": "2025-03-31T11:16:18.514466Z",
+     "iopub.status.idle": "2025-03-31T11:16:27.128677Z",
+     "shell.execute_reply": "2025-03-31T11:16:27.127443Z"
+    },
+    "papermill": {
+     "duration": 8.622659,
+     "end_time": "2025-03-31T11:16:27.131288",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:18.508629",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Found TF-DF 1.2.0\n"
+     ]
+    }
+   ],
+   "source": [
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import os\n",
+    "\n",
+    "import tensorflow as tf\n",
+    "import tensorflow_decision_forests as tfdf\n",
+    "\n",
+    "print(f\"Found TF-DF {tfdf.__version__}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "504a891a",
+   "metadata": {
+    "papermill": {
+     "duration": 0.004344,
+     "end_time": "2025-03-31T11:16:27.140458",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.136114",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Load dataset"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "3ba6b999",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:27.151505Z",
+     "iopub.status.busy": "2025-03-31T11:16:27.150904Z",
+     "iopub.status.idle": "2025-03-31T11:16:27.205463Z",
+     "shell.execute_reply": "2025-03-31T11:16:27.204244Z"
+    },
+    "papermill": {
+     "duration": 0.062702,
+     "end_time": "2025-03-31T11:16:27.207734",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.145032",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>PassengerId</th>\n",
+       "      <th>Survived</th>\n",
+       "      <th>Pclass</th>\n",
+       "      <th>Name</th>\n",
+       "      <th>Sex</th>\n",
+       "      <th>Age</th>\n",
+       "      <th>SibSp</th>\n",
+       "      <th>Parch</th>\n",
+       "      <th>Ticket</th>\n",
+       "      <th>Fare</th>\n",
+       "      <th>Cabin</th>\n",
+       "      <th>Embarked</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Braund, Mr. Owen Harris</td>\n",
+       "      <td>male</td>\n",
+       "      <td>22.0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>A/5 21171</td>\n",
+       "      <td>7.2500</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>S</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>2</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>Cumings, Mrs. John Bradley (Florence Briggs Th...</td>\n",
+       "      <td>female</td>\n",
+       "      <td>38.0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>PC 17599</td>\n",
+       "      <td>71.2833</td>\n",
+       "      <td>C85</td>\n",
+       "      <td>C</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>3</td>\n",
+       "      <td>1</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Heikkinen, Miss. Laina</td>\n",
+       "      <td>female</td>\n",
+       "      <td>26.0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>STON/O2. 3101282</td>\n",
+       "      <td>7.9250</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>S</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>4</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>Futrelle, Mrs. Jacques Heath (Lily May Peel)</td>\n",
+       "      <td>female</td>\n",
+       "      <td>35.0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>113803</td>\n",
+       "      <td>53.1000</td>\n",
+       "      <td>C123</td>\n",
+       "      <td>S</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>5</td>\n",
+       "      <td>0</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Allen, Mr. William Henry</td>\n",
+       "      <td>male</td>\n",
+       "      <td>35.0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>373450</td>\n",
+       "      <td>8.0500</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>S</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>5</th>\n",
+       "      <td>6</td>\n",
+       "      <td>0</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Moran, Mr. James</td>\n",
+       "      <td>male</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>330877</td>\n",
+       "      <td>8.4583</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>Q</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>6</th>\n",
+       "      <td>7</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>McCarthy, Mr. Timothy J</td>\n",
+       "      <td>male</td>\n",
+       "      <td>54.0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>17463</td>\n",
+       "      <td>51.8625</td>\n",
+       "      <td>E46</td>\n",
+       "      <td>S</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>7</th>\n",
+       "      <td>8</td>\n",
+       "      <td>0</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Palsson, Master. Gosta Leonard</td>\n",
+       "      <td>male</td>\n",
+       "      <td>2.0</td>\n",
+       "      <td>3</td>\n",
+       "      <td>1</td>\n",
+       "      <td>349909</td>\n",
+       "      <td>21.0750</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>S</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>8</th>\n",
+       "      <td>9</td>\n",
+       "      <td>1</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Johnson, Mrs. Oscar W (Elisabeth Vilhelmina Berg)</td>\n",
+       "      <td>female</td>\n",
+       "      <td>27.0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>2</td>\n",
+       "      <td>347742</td>\n",
+       "      <td>11.1333</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>S</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>9</th>\n",
+       "      <td>10</td>\n",
+       "      <td>1</td>\n",
+       "      <td>2</td>\n",
+       "      <td>Nasser, Mrs. Nicholas (Adele Achem)</td>\n",
+       "      <td>female</td>\n",
+       "      <td>14.0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>237736</td>\n",
+       "      <td>30.0708</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>C</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   PassengerId  Survived  Pclass  \\\n",
+       "0            1         0       3   \n",
+       "1            2         1       1   \n",
+       "2            3         1       3   \n",
+       "3            4         1       1   \n",
+       "4            5         0       3   \n",
+       "5            6         0       3   \n",
+       "6            7         0       1   \n",
+       "7            8         0       3   \n",
+       "8            9         1       3   \n",
+       "9           10         1       2   \n",
+       "\n",
+       "                                                Name     Sex   Age  SibSp  \\\n",
+       "0                            Braund, Mr. Owen Harris    male  22.0      1   \n",
+       "1  Cumings, Mrs. John Bradley (Florence Briggs Th...  female  38.0      1   \n",
+       "2                             Heikkinen, Miss. Laina  female  26.0      0   \n",
+       "3       Futrelle, Mrs. Jacques Heath (Lily May Peel)  female  35.0      1   \n",
+       "4                           Allen, Mr. William Henry    male  35.0      0   \n",
+       "5                                   Moran, Mr. James    male   NaN      0   \n",
+       "6                            McCarthy, Mr. Timothy J    male  54.0      0   \n",
+       "7                     Palsson, Master. Gosta Leonard    male   2.0      3   \n",
+       "8  Johnson, Mrs. Oscar W (Elisabeth Vilhelmina Berg)  female  27.0      0   \n",
+       "9                Nasser, Mrs. Nicholas (Adele Achem)  female  14.0      1   \n",
+       "\n",
+       "   Parch            Ticket     Fare Cabin Embarked  \n",
+       "0      0         A/5 21171   7.2500   NaN        S  \n",
+       "1      0          PC 17599  71.2833   C85        C  \n",
+       "2      0  STON/O2. 3101282   7.9250   NaN        S  \n",
+       "3      0            113803  53.1000  C123        S  \n",
+       "4      0            373450   8.0500   NaN        S  \n",
+       "5      0            330877   8.4583   NaN        Q  \n",
+       "6      0             17463  51.8625   E46        S  \n",
+       "7      1            349909  21.0750   NaN        S  \n",
+       "8      2            347742  11.1333   NaN        S  \n",
+       "9      0            237736  30.0708   NaN        C  "
+      ]
+     },
+     "execution_count": 2,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "tf_learn = pd.read_csv(\"/kaggle/input/titanic/train.csv\")\n",
+    "tf_test = pd.read_csv(\"/kaggle/input/titanic/test.csv\")\n",
+    "\n",
+    "tf_learn.head(10)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "4de3e8ed",
+   "metadata": {
+    "papermill": {
+     "duration": 0.004611,
+     "end_time": "2025-03-31T11:16:27.217346",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.212735",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Prepare dataset\n",
+    "\n",
+    "We will apply the following transformations on the dataset.\n",
+    "\n",
+    "1. Tokenize the names. For example, \"Braund, Mr. Owen Harris\" will become [\"Braund\", \"Mr.\", \"Owen\", \"Harris\"].\n",
+    "2. Extract any prefix in the ticket. For example ticket \"STON/O2. 3101282\" will become \"STON/O2.\" and 3101282."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "f02f557a",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:27.229356Z",
+     "iopub.status.busy": "2025-03-31T11:16:27.228455Z",
+     "iopub.status.idle": "2025-03-31T11:16:27.261936Z",
+     "shell.execute_reply": "2025-03-31T11:16:27.260734Z"
+    },
+    "papermill": {
+     "duration": 0.04214,
+     "end_time": "2025-03-31T11:16:27.264404",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.222264",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>PassengerId</th>\n",
+       "      <th>Survived</th>\n",
+       "      <th>Pclass</th>\n",
+       "      <th>Name</th>\n",
+       "      <th>Sex</th>\n",
+       "      <th>Age</th>\n",
+       "      <th>SibSp</th>\n",
+       "      <th>Parch</th>\n",
+       "      <th>Ticket</th>\n",
+       "      <th>Fare</th>\n",
+       "      <th>Cabin</th>\n",
+       "      <th>Embarked</th>\n",
+       "      <th>Ticket_number</th>\n",
+       "      <th>Ticket_item</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Braund Mr Owen Harris</td>\n",
+       "      <td>male</td>\n",
+       "      <td>22.0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>A/5 21171</td>\n",
+       "      <td>7.2500</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>S</td>\n",
+       "      <td>21171</td>\n",
+       "      <td>A/5</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>2</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>Cumings Mrs John Bradley Florence Briggs Thayer</td>\n",
+       "      <td>female</td>\n",
+       "      <td>38.0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>PC 17599</td>\n",
+       "      <td>71.2833</td>\n",
+       "      <td>C85</td>\n",
+       "      <td>C</td>\n",
+       "      <td>17599</td>\n",
+       "      <td>PC</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>3</td>\n",
+       "      <td>1</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Heikkinen Miss Laina</td>\n",
+       "      <td>female</td>\n",
+       "      <td>26.0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>STON/O2. 3101282</td>\n",
+       "      <td>7.9250</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>S</td>\n",
+       "      <td>3101282</td>\n",
+       "      <td>STON/O2.</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>4</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>Futrelle Mrs Jacques Heath Lily May Peel</td>\n",
+       "      <td>female</td>\n",
+       "      <td>35.0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>113803</td>\n",
+       "      <td>53.1000</td>\n",
+       "      <td>C123</td>\n",
+       "      <td>S</td>\n",
+       "      <td>113803</td>\n",
+       "      <td>NONE</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>5</td>\n",
+       "      <td>0</td>\n",
+       "      <td>3</td>\n",
+       "      <td>Allen Mr William Henry</td>\n",
+       "      <td>male</td>\n",
+       "      <td>35.0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>373450</td>\n",
+       "      <td>8.0500</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>S</td>\n",
+       "      <td>373450</td>\n",
+       "      <td>NONE</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   PassengerId  Survived  Pclass  \\\n",
+       "0            1         0       3   \n",
+       "1            2         1       1   \n",
+       "2            3         1       3   \n",
+       "3            4         1       1   \n",
+       "4            5         0       3   \n",
+       "\n",
+       "                                              Name     Sex   Age  SibSp  \\\n",
+       "0                            Braund Mr Owen Harris    male  22.0      1   \n",
+       "1  Cumings Mrs John Bradley Florence Briggs Thayer  female  38.0      1   \n",
+       "2                             Heikkinen Miss Laina  female  26.0      0   \n",
+       "3         Futrelle Mrs Jacques Heath Lily May Peel  female  35.0      1   \n",
+       "4                           Allen Mr William Henry    male  35.0      0   \n",
+       "\n",
+       "   Parch            Ticket     Fare Cabin Embarked Ticket_number Ticket_item  \n",
+       "0      0         A/5 21171   7.2500   NaN        S         21171         A/5  \n",
+       "1      0          PC 17599  71.2833   C85        C         17599          PC  \n",
+       "2      0  STON/O2. 3101282   7.9250   NaN        S       3101282    STON/O2.  \n",
+       "3      0            113803  53.1000  C123        S        113803        NONE  \n",
+       "4      0            373450   8.0500   NaN        S        373450        NONE  "
+      ]
+     },
+     "execution_count": 3,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "def preprocess(df):\n",
+    "    df = df.copy()\n",
+    "    \n",
+    "    def normalize_name(x):\n",
+    "        return \" \".join([v.strip(\",()[].\\\"'\") for v in x.split(\" \")])\n",
+    "    \n",
+    "    def ticket_number(x):\n",
+    "        return x.split(\" \")[-1]\n",
+    "        \n",
+    "    def ticket_item(x):\n",
+    "        items = x.split(\" \")\n",
+    "        if len(items) == 1:\n",
+    "            return \"NONE\"\n",
+    "        return \"_\".join(items[0:-1])\n",
+    "    \n",
+    "    df[\"Name\"] = df[\"Name\"].apply(normalize_name)\n",
+    "    df[\"Ticket_number\"] = df[\"Ticket\"].apply(ticket_number)\n",
+    "    df[\"Ticket_item\"] = df[\"Ticket\"].apply(ticket_item)                     \n",
+    "    return df\n",
+    "    \n",
+    "preprocessed_tf_learn = preprocess(tf_learn)\n",
+    "preprocessed_tf_test = preprocess(tf_test)\n",
+    "\n",
+    "preprocessed_tf_learn.head(5)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "1f5015a5",
+   "metadata": {
+    "papermill": {
+     "duration": 0.004977,
+     "end_time": "2025-03-31T11:16:27.274606",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.269629",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "Let's keep the list of the input features of the model. Notably, we don't want to train our model on the \"PassengerId\" and \"Ticket\" features."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "69148a08",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:27.286984Z",
+     "iopub.status.busy": "2025-03-31T11:16:27.286580Z",
+     "iopub.status.idle": "2025-03-31T11:16:27.293281Z",
+     "shell.execute_reply": "2025-03-31T11:16:27.292028Z"
+    },
+    "papermill": {
+     "duration": 0.015674,
+     "end_time": "2025-03-31T11:16:27.295668",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.279994",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Input features: ['Pclass', 'Name', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Cabin', 'Embarked', 'Ticket_number', 'Ticket_item']\n"
+     ]
+    }
+   ],
+   "source": [
+    "input_features = list(preprocessed_tf_learn.columns)\n",
+    "input_features.remove(\"Ticket\")\n",
+    "input_features.remove(\"PassengerId\")\n",
+    "input_features.remove(\"Survived\")\n",
+    "#input_features.remove(\"Ticket_number\")\n",
+    "\n",
+    "print(f\"Input features: {input_features}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "822b0088",
+   "metadata": {
+    "papermill": {
+     "duration": 0.005355,
+     "end_time": "2025-03-31T11:16:27.306489",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.301134",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Convert Pandas dataset to TensorFlow Dataset"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "b590f207",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:27.319880Z",
+     "iopub.status.busy": "2025-03-31T11:16:27.319478Z",
+     "iopub.status.idle": "2025-03-31T11:16:27.622446Z",
+     "shell.execute_reply": "2025-03-31T11:16:27.621243Z"
+    },
+    "papermill": {
+     "duration": 0.313459,
+     "end_time": "2025-03-31T11:16:27.625334",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.311875",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "def tokenize_names(features, labels=None):\n",
+    "    \"\"\"Divide the names into tokens. TF-DF can consume text tokens natively.\"\"\"\n",
+    "    features[\"Name\"] =  tf.strings.split(features[\"Name\"])\n",
+    "    return features, labels\n",
+    "\n",
+    "train_ds = tfdf.keras.pd_dataframe_to_tf_dataset(preprocessed_tf_learn,label=\"Survived\").map(tokenize_names)\n",
+    "serving_ds = tfdf.keras.pd_dataframe_to_tf_dataset(preprocessed_tf_test).map(tokenize_names)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "28dce0ea",
+   "metadata": {
+    "papermill": {
+     "duration": 0.005006,
+     "end_time": "2025-03-31T11:16:27.635734",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.630728",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Train model with default parameters\n",
+    "\n",
+    "### Train model\n",
+    "\n",
+    "First, we are training a GradientBoostedTreesModel model with the default parameters."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "id": "28eaedda",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:27.648547Z",
+     "iopub.status.busy": "2025-03-31T11:16:27.647544Z",
+     "iopub.status.idle": "2025-03-31T11:16:35.716810Z",
+     "shell.execute_reply": "2025-03-31T11:16:35.715540Z"
+    },
+    "papermill": {
+     "duration": 8.078326,
+     "end_time": "2025-03-31T11:16:35.719338",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:27.641012",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:16:33.390146877+00:00 kernel.cc:1214] Loading model from path /tmp/tmp5uhrcplq/model/ with prefix fcc33a810b454bee\n",
+      "[INFO 2025-03-31T11:16:33.402136238+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:16:33.402243603+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "WARNING: AutoGraph could not transform <function simple_ml_inference_op_with_handle at 0x7e4aee8cc4d0> and will run it as-is.\n",
+      "Please report this to the TensorFlow team. When filing the bug, set the verbosity to 10 (on Linux, `export AUTOGRAPH_VERBOSITY=10`) and attach the full output.\n",
+      "Cause: could not get source code\n",
+      "To silence this warning, decorate the function with @tf.autograph.experimental.do_not_convert\n",
+      "Accuracy: 0.8064516186714172 Loss:0.8859072327613831\n"
+     ]
+    }
+   ],
+   "source": [
+    "model = tfdf.keras.GradientBoostedTreesModel(\n",
+    "    verbose=0, # Very few logs\n",
+    "    features=[tfdf.keras.FeatureUsage(name=n) for n in input_features],\n",
+    "    exclude_non_specified_features=True, # Only use the features in \"features\"\n",
+    "    random_seed=4801,\n",
+    ")\n",
+    "model.fit(train_ds)\n",
+    "\n",
+    "self_evaluation = model.make_inspector().evaluation()\n",
+    "print(f\"Accuracy: {self_evaluation.accuracy} Loss:{self_evaluation.loss}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "efd78a37",
+   "metadata": {
+    "papermill": {
+     "duration": 0.005159,
+     "end_time": "2025-03-31T11:16:35.730132",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:35.724973",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Train model with improved default parameters\n",
+    "\n",
+    "Now you'll use some specific parameters when creating the GBT model"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "id": "20ab6417",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:35.742701Z",
+     "iopub.status.busy": "2025-03-31T11:16:35.742317Z",
+     "iopub.status.idle": "2025-03-31T11:16:37.347877Z",
+     "shell.execute_reply": "2025-03-31T11:16:37.346494Z"
+    },
+    "papermill": {
+     "duration": 1.614744,
+     "end_time": "2025-03-31T11:16:37.350295",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:35.735551",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Resolve hyper-parameter template \"benchmark_rank1@v1\" to \"benchmark_rank1@v1\" -> {'growing_strategy': 'BEST_FIRST_GLOBAL', 'categorical_algorithm': 'RANDOM', 'split_axis': 'SPARSE_OBLIQUE', 'sparse_oblique_normalization': 'MIN_MAX', 'sparse_oblique_num_projections_exponent': 1.0}.\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:16:37.035472614+00:00 kernel.cc:1214] Loading model from path /tmp/tmp7u05eu6k/model/ with prefix 7b7e354673b042b8\n",
+      "[INFO 2025-03-31T11:16:37.051602669+00:00 decision_forest.cc:661] Model loaded with 61 root(s), 3721 node(s), and 10 input feature(s).\n",
+      "[INFO 2025-03-31T11:16:37.051666928+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Accuracy: 0.8279569745063782 Loss:0.9095631837844849\n"
+     ]
+    }
+   ],
+   "source": [
+    "model = tfdf.keras.GradientBoostedTreesModel(\n",
+    "    verbose=0, # Very few logs\n",
+    "    features=[tfdf.keras.FeatureUsage(name=n) for n in input_features],\n",
+    "    exclude_non_specified_features=True, # Only use the features in \"features\"\n",
+    "    \n",
+    "    #num_trees=2000,\n",
+    "    \n",
+    "    # Only for GBT.\n",
+    "    # A bit slower, but great to understand the model.\n",
+    "    # compute_permutation_variable_importance=True,\n",
+    "    \n",
+    "    # Change the default hyper-parameters\n",
+    "     hyperparameter_template=\"benchmark_rank1@v1\",\n",
+    "    \n",
+    "    num_trees=1000,\n",
+    "    #tuner=tuner,\n",
+    "    \n",
+    "    min_examples=1,\n",
+    "    categorical_algorithm=\"RANDOM\",\n",
+    "    #max_depth=4,\n",
+    "    shrinkage=0.05,\n",
+    "    #num_candidate_attributes_ratio=0.2,\n",
+    "    split_axis=\"SPARSE_OBLIQUE\",\n",
+    "    sparse_oblique_normalization=\"MIN_MAX\",\n",
+    "    sparse_oblique_num_projections_exponent=2.0,\n",
+    "    #num_trees=2000,\n",
+    "    #validation_ratio=0.0,\n",
+    "    random_seed=4801,\n",
+    "    \n",
+    ")\n",
+    "model.fit(train_ds)\n",
+    "\n",
+    "self_evaluation = model.make_inspector().evaluation()\n",
+    "print(f\"Accuracy: {self_evaluation.accuracy} Loss:{self_evaluation.loss}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "e104da92",
+   "metadata": {
+    "papermill": {
+     "duration": 0.00541,
+     "end_time": "2025-03-31T11:16:37.361582",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:37.356172",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "Let's look at the model and you can also notice the information about variable importance that the model figured out"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "id": "2869dc9e",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:37.375613Z",
+     "iopub.status.busy": "2025-03-31T11:16:37.374494Z",
+     "iopub.status.idle": "2025-03-31T11:16:37.391660Z",
+     "shell.execute_reply": "2025-03-31T11:16:37.390221Z"
+    },
+    "papermill": {
+     "duration": 0.02695,
+     "end_time": "2025-03-31T11:16:37.394150",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:37.367200",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Model: \"gradient_boosted_trees_model_1\"\n",
+      "_________________________________________________________________\n",
+      " Layer (type)                Output Shape              Param #   \n",
+      "=================================================================\n",
+      "=================================================================\n",
+      "Total params: 1\n",
+      "Trainable params: 0\n",
+      "Non-trainable params: 1\n",
+      "_________________________________________________________________\n",
+      "Type: \"GRADIENT_BOOSTED_TREES\"\n",
+      "Task: CLASSIFICATION\n",
+      "Label: \"__LABEL\"\n",
+      "\n",
+      "Input Features (11):\n",
+      "\tAge\n",
+      "\tCabin\n",
+      "\tEmbarked\n",
+      "\tFare\n",
+      "\tName\n",
+      "\tParch\n",
+      "\tPclass\n",
+      "\tSex\n",
+      "\tSibSp\n",
+      "\tTicket_item\n",
+      "\tTicket_number\n",
+      "\n",
+      "No weights\n",
+      "\n",
+      "Variable Importance: INV_MEAN_MIN_DEPTH:\n",
+      "    1.           \"Sex\"  0.526155 ################\n",
+      "    2.           \"Age\"  0.333098 #######\n",
+      "    3.          \"Fare\"  0.281776 #####\n",
+      "    4.          \"Name\"  0.205053 ##\n",
+      "    5.   \"Ticket_item\"  0.169232 \n",
+      "    6.      \"Embarked\"  0.167153 \n",
+      "    7.        \"Pclass\"  0.162989 \n",
+      "    8. \"Ticket_number\"  0.162835 \n",
+      "    9.         \"Parch\"  0.161472 \n",
+      "   10.         \"SibSp\"  0.158442 \n",
+      "\n",
+      "Variable Importance: NUM_AS_ROOT:\n",
+      "    1.  \"Sex\" 50.000000 ################\n",
+      "    2. \"Name\"  7.000000 #\n",
+      "    3. \"Fare\"  3.000000 \n",
+      "    4.  \"Age\"  1.000000 \n",
+      "\n",
+      "Variable Importance: NUM_NODES:\n",
+      "    1.           \"Age\" 853.000000 ################\n",
+      "    2.          \"Fare\" 576.000000 ##########\n",
+      "    3.          \"Name\" 144.000000 ##\n",
+      "    4.   \"Ticket_item\" 84.000000 #\n",
+      "    5.           \"Sex\" 58.000000 \n",
+      "    6.      \"Embarked\" 34.000000 \n",
+      "    7.         \"Parch\" 32.000000 \n",
+      "    8. \"Ticket_number\" 29.000000 \n",
+      "    9.        \"Pclass\" 13.000000 \n",
+      "   10.         \"SibSp\"  7.000000 \n",
+      "\n",
+      "Variable Importance: SUM_SCORE:\n",
+      "    1.           \"Sex\" 501.548118 ################\n",
+      "    2.           \"Age\" 484.173525 ###############\n",
+      "    3.          \"Fare\" 387.898234 ############\n",
+      "    4.          \"Name\" 137.231399 ####\n",
+      "    5.   \"Ticket_item\" 34.793432 #\n",
+      "    6.        \"Pclass\" 33.560201 #\n",
+      "    7. \"Ticket_number\" 20.879564 \n",
+      "    8.         \"Parch\" 16.332183 \n",
+      "    9.      \"Embarked\" 10.692916 \n",
+      "   10.         \"SibSp\"  1.784889 \n",
+      "\n",
+      "\n",
+      "\n",
+      "Loss: BINOMIAL_LOG_LIKELIHOOD\n",
+      "Validation loss value: 0.909563\n",
+      "Number of trees per iteration: 1\n",
+      "Node format: NOT_SET\n",
+      "Number of trees: 61\n",
+      "Total number of nodes: 3721\n",
+      "\n",
+      "Number of nodes by tree:\n",
+      "Count: 61 Average: 61 StdDev: 0\n",
+      "Min: 61 Max: 61 Ignored: 0\n",
+      "----------------------------------------------\n",
+      "[ 61, 61] 61 100.00% 100.00% ##########\n",
+      "\n",
+      "Depth by leafs:\n",
+      "Count: 1891 Average: 5.32417 StdDev: 0.928509\n",
+      "Min: 2 Max: 6 Ignored: 0\n",
+      "----------------------------------------------\n",
+      "[ 2, 3)    5   0.26%   0.26%\n",
+      "[ 3, 4)  102   5.39%   5.66% #\n",
+      "[ 4, 5)  272  14.38%  20.04% ##\n",
+      "[ 5, 6)  408  21.58%  41.62% ####\n",
+      "[ 6, 6] 1104  58.38% 100.00% ##########\n",
+      "\n",
+      "Number of training obs by leaf:\n",
+      "Count: 1891 Average: 0 StdDev: 0\n",
+      "Min: 0 Max: 0 Ignored: 0\n",
+      "----------------------------------------------\n",
+      "[ 0, 0] 1891 100.00% 100.00% ##########\n",
+      "\n",
+      "Attribute in nodes:\n",
+      "\t853 : Age [NUMERICAL]\n",
+      "\t576 : Fare [NUMERICAL]\n",
+      "\t144 : Name [CATEGORICAL_SET]\n",
+      "\t84 : Ticket_item [CATEGORICAL]\n",
+      "\t58 : Sex [CATEGORICAL]\n",
+      "\t34 : Embarked [CATEGORICAL]\n",
+      "\t32 : Parch [NUMERICAL]\n",
+      "\t29 : Ticket_number [CATEGORICAL]\n",
+      "\t13 : Pclass [NUMERICAL]\n",
+      "\t7 : SibSp [NUMERICAL]\n",
+      "\n",
+      "Attribute in nodes with depth <= 0:\n",
+      "\t50 : Sex [CATEGORICAL]\n",
+      "\t7 : Name [CATEGORICAL_SET]\n",
+      "\t3 : Fare [NUMERICAL]\n",
+      "\t1 : Age [NUMERICAL]\n",
+      "\n",
+      "Attribute in nodes with depth <= 1:\n",
+      "\t56 : Age [NUMERICAL]\n",
+      "\t50 : Sex [CATEGORICAL]\n",
+      "\t50 : Fare [NUMERICAL]\n",
+      "\t16 : Name [CATEGORICAL_SET]\n",
+      "\t6 : Pclass [NUMERICAL]\n",
+      "\t3 : Embarked [CATEGORICAL]\n",
+      "\t1 : Ticket_number [CATEGORICAL]\n",
+      "\t1 : Ticket_item [CATEGORICAL]\n",
+      "\n",
+      "Attribute in nodes with depth <= 2:\n",
+      "\t167 : Age [NUMERICAL]\n",
+      "\t124 : Fare [NUMERICAL]\n",
+      "\t53 : Sex [CATEGORICAL]\n",
+      "\t37 : Name [CATEGORICAL_SET]\n",
+      "\t12 : Ticket_item [CATEGORICAL]\n",
+      "\t9 : Embarked [CATEGORICAL]\n",
+      "\t8 : Parch [NUMERICAL]\n",
+      "\t6 : Pclass [NUMERICAL]\n",
+      "\t5 : Ticket_number [CATEGORICAL]\n",
+      "\t1 : SibSp [NUMERICAL]\n",
+      "\n",
+      "Attribute in nodes with depth <= 3:\n",
+      "\t355 : Age [NUMERICAL]\n",
+      "\t230 : Fare [NUMERICAL]\n",
+      "\t70 : Name [CATEGORICAL_SET]\n",
+      "\t55 : Sex [CATEGORICAL]\n",
+      "\t33 : Ticket_item [CATEGORICAL]\n",
+      "\t17 : Ticket_number [CATEGORICAL]\n",
+      "\t14 : Parch [NUMERICAL]\n",
+      "\t12 : Embarked [CATEGORICAL]\n",
+      "\t9 : Pclass [NUMERICAL]\n",
+      "\t3 : SibSp [NUMERICAL]\n",
+      "\n",
+      "Attribute in nodes with depth <= 5:\n",
+      "\t853 : Age [NUMERICAL]\n",
+      "\t576 : Fare [NUMERICAL]\n",
+      "\t144 : Name [CATEGORICAL_SET]\n",
+      "\t84 : Ticket_item [CATEGORICAL]\n",
+      "\t58 : Sex [CATEGORICAL]\n",
+      "\t34 : Embarked [CATEGORICAL]\n",
+      "\t32 : Parch [NUMERICAL]\n",
+      "\t29 : Ticket_number [CATEGORICAL]\n",
+      "\t13 : Pclass [NUMERICAL]\n",
+      "\t7 : SibSp [NUMERICAL]\n",
+      "\n",
+      "Condition type in nodes:\n",
+      "\t1481 : ObliqueCondition\n",
+      "\t237 : ContainsBitmapCondition\n",
+      "\t112 : ContainsCondition\n",
+      "Condition type in nodes with depth <= 0:\n",
+      "\t55 : ContainsBitmapCondition\n",
+      "\t4 : ObliqueCondition\n",
+      "\t2 : ContainsCondition\n",
+      "Condition type in nodes with depth <= 1:\n",
+      "\t112 : ObliqueCondition\n",
+      "\t65 : ContainsBitmapCondition\n",
+      "\t6 : ContainsCondition\n",
+      "Condition type in nodes with depth <= 2:\n",
+      "\t306 : ObliqueCondition\n",
+      "\t95 : ContainsBitmapCondition\n",
+      "\t21 : ContainsCondition\n",
+      "Condition type in nodes with depth <= 3:\n",
+      "\t611 : ObliqueCondition\n",
+      "\t141 : ContainsBitmapCondition\n",
+      "\t46 : ContainsCondition\n",
+      "Condition type in nodes with depth <= 5:\n",
+      "\t1481 : ObliqueCondition\n",
+      "\t237 : ContainsBitmapCondition\n",
+      "\t112 : ContainsCondition\n",
+      "\n",
+      "Training logs:\n",
+      "Number of iteration to final model: 61\n",
+      "\tIter:1 train-loss:1.256371 valid-loss:1.371428  train-accuracy:0.626566 valid-accuracy:0.526882\n",
+      "\tIter:2 train-loss:1.200882 valid-loss:1.330708  train-accuracy:0.626566 valid-accuracy:0.526882\n",
+      "\tIter:3 train-loss:1.152106 valid-loss:1.288654  train-accuracy:0.626566 valid-accuracy:0.526882\n",
+      "\tIter:4 train-loss:1.104124 valid-loss:1.253326  train-accuracy:0.626566 valid-accuracy:0.526882\n",
+      "\tIter:5 train-loss:1.059804 valid-loss:1.219514  train-accuracy:0.819549 valid-accuracy:0.720430\n",
+      "\tIter:6 train-loss:1.021832 valid-loss:1.189721  train-accuracy:0.842105 valid-accuracy:0.741935\n",
+      "\tIter:16 train-loss:0.747172 valid-loss:1.024413  train-accuracy:0.919800 valid-accuracy:0.827957\n",
+      "\tIter:26 train-loss:0.585893 valid-loss:0.955492  train-accuracy:0.931078 valid-accuracy:0.817204\n",
+      "\tIter:36 train-loss:0.487035 valid-loss:0.926583  train-accuracy:0.936090 valid-accuracy:0.827957\n",
+      "\tIter:46 train-loss:0.413836 valid-loss:0.912227  train-accuracy:0.947368 valid-accuracy:0.817204\n",
+      "\tIter:56 train-loss:0.362733 valid-loss:0.911119  train-accuracy:0.954887 valid-accuracy:0.827957\n",
+      "\tIter:66 train-loss:0.321798 valid-loss:0.915164  train-accuracy:0.959900 valid-accuracy:0.827957\n",
+      "\tIter:76 train-loss:0.286676 valid-loss:0.918171  train-accuracy:0.964912 valid-accuracy:0.817204\n",
+      "\tIter:86 train-loss:0.260247 valid-loss:0.920530  train-accuracy:0.973684 valid-accuracy:0.827957\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "model.summary()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7ca1686b",
+   "metadata": {
+    "papermill": {
+     "duration": 0.006004,
+     "end_time": "2025-03-31T11:16:37.406510",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:37.400506",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Make predictions"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "id": "896ecba2",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:37.420546Z",
+     "iopub.status.busy": "2025-03-31T11:16:37.420170Z",
+     "iopub.status.idle": "2025-03-31T11:16:38.622880Z",
+     "shell.execute_reply": "2025-03-31T11:16:38.621583Z"
+    },
+    "papermill": {
+     "duration": 1.213032,
+     "end_time": "2025-03-31T11:16:38.625623",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:37.412591",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Submission exported to /kaggle/working/submission.csv\n",
+      "PassengerId,Survived\r\n",
+      "892,0\r\n",
+      "893,0\r\n",
+      "894,0\r\n",
+      "895,0\r\n",
+      "896,0\r\n",
+      "897,0\r\n",
+      "898,0\r\n",
+      "899,0\r\n",
+      "900,1\r\n"
+     ]
+    }
+   ],
+   "source": [
+    "def prediction_to_kaggle_format(model, threshold=0.5):\n",
+    "    proba_survive = model.predict(serving_ds, verbose=0)[:,0]\n",
+    "    return pd.DataFrame({\n",
+    "        \"PassengerId\": tf_test[\"PassengerId\"],\n",
+    "        \"Survived\": (proba_survive >= threshold).astype(int)\n",
+    "    })\n",
+    "\n",
+    "def make_submission(kaggle_predictions):\n",
+    "    path=\"/kaggle/working/submission.csv\"\n",
+    "    kaggle_predictions.to_csv(path, index=False)\n",
+    "    print(f\"Submission exported to {path}\")\n",
+    "    \n",
+    "kaggle_predictions = prediction_to_kaggle_format(model)\n",
+    "make_submission(kaggle_predictions)\n",
+    "!head /kaggle/working/submission.csv"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "5cb7f111",
+   "metadata": {
+    "papermill": {
+     "duration": 0.006199,
+     "end_time": "2025-03-31T11:16:38.638303",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:38.632104",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Training a model with hyperparameter tuning\n",
+    "\n",
+    "Hyper-parameter tuning is enabled by specifying the tuner constructor argument of the model. The tuner object contains all the configuration of the tuner (search space, optimizer, trial and objective).\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "id": "9bf652e0",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:16:38.653504Z",
+     "iopub.status.busy": "2025-03-31T11:16:38.652629Z",
+     "iopub.status.idle": "2025-03-31T11:18:35.117238Z",
+     "shell.execute_reply": "2025-03-31T11:18:35.115937Z"
+    },
+    "papermill": {
+     "duration": 116.47511,
+     "end_time": "2025-03-31T11:18:35.119666",
+     "exception": false,
+     "start_time": "2025-03-31T11:16:38.644556",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Use /tmp/tmp9v_uufe7 as temporary training directory\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:34.739853418+00:00 kernel.cc:1214] Loading model from path /tmp/tmp9v_uufe7/model/ with prefix 0874d33301734435\n",
+      "[INFO 2025-03-31T11:18:34.754287975+00:00 decision_forest.cc:661] Model loaded with 19 root(s), 589 node(s), and 12 input feature(s).\n",
+      "[INFO 2025-03-31T11:18:34.754331716+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesGeneric\" built\n",
+      "[INFO 2025-03-31T11:18:34.754356279+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Accuracy: 0.9178082346916199 Loss:0.6503586769104004\n"
+     ]
+    }
+   ],
+   "source": [
+    "tuner = tfdf.tuner.RandomSearch(num_trials=1000)\n",
+    "tuner.choice(\"min_examples\", [2, 5, 7, 10])\n",
+    "tuner.choice(\"categorical_algorithm\", [\"CART\", \"RANDOM\"])\n",
+    "\n",
+    "local_search_space = tuner.choice(\"growing_strategy\", [\"LOCAL\"])\n",
+    "local_search_space.choice(\"max_depth\", [3, 4, 5, 6, 8])\n",
+    "\n",
+    "global_search_space = tuner.choice(\"growing_strategy\", [\"BEST_FIRST_GLOBAL\"], merge=True)\n",
+    "global_search_space.choice(\"max_num_nodes\", [16, 32, 64, 128, 256])\n",
+    "\n",
+    "#tuner.choice(\"use_hessian_gain\", [True, False])\n",
+    "tuner.choice(\"shrinkage\", [0.02, 0.05, 0.10, 0.15])\n",
+    "tuner.choice(\"num_candidate_attributes_ratio\", [0.2, 0.5, 0.9, 1.0])\n",
+    "\n",
+    "\n",
+    "tuner.choice(\"split_axis\", [\"AXIS_ALIGNED\"])\n",
+    "oblique_space = tuner.choice(\"split_axis\", [\"SPARSE_OBLIQUE\"], merge=True)\n",
+    "oblique_space.choice(\"sparse_oblique_normalization\",\n",
+    "                     [\"NONE\", \"STANDARD_DEVIATION\", \"MIN_MAX\"])\n",
+    "oblique_space.choice(\"sparse_oblique_weights\", [\"BINARY\", \"CONTINUOUS\"])\n",
+    "oblique_space.choice(\"sparse_oblique_num_projections_exponent\", [1.0, 1.5])\n",
+    "\n",
+    "# Tune the model. Notice the `tuner=tuner`.\n",
+    "tuned_model = tfdf.keras.GradientBoostedTreesModel(tuner=tuner)\n",
+    "tuned_model.fit(train_ds, verbose=0)\n",
+    "\n",
+    "tuned_self_evaluation = tuned_model.make_inspector().evaluation()\n",
+    "print(f\"Accuracy: {tuned_self_evaluation.accuracy} Loss:{tuned_self_evaluation.loss}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "1003a8f0",
+   "metadata": {
+    "papermill": {
+     "duration": 0.00622,
+     "end_time": "2025-03-31T11:18:35.132668",
+     "exception": false,
+     "start_time": "2025-03-31T11:18:35.126448",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "In the last line in the cell above, you can see the accuracy is higher than previously with default parameters and parameters set by hand.\n",
+    "\n",
+    "This is the main idea behing hyperparameter tuning.\n",
+    "\n",
+    "For more information you can follow this tutorial: [Automated hyper-parameter tuning](https://www.tensorflow.org/decision_forests/tutorials/automatic_tuning_colab)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7432acd4",
+   "metadata": {
+    "papermill": {
+     "duration": 0.006146,
+     "end_time": "2025-03-31T11:18:35.145256",
+     "exception": false,
+     "start_time": "2025-03-31T11:18:35.139110",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# Making an ensemble\n",
+    "\n",
+    "Here you'll create 100 models with different seeds and combine their results\n",
+    "\n",
+    "This approach removes a little bit the random aspects related to creating ML models\n",
+    "\n",
+    "In the GBT creation is used the `honest` parameter. It will use different training examples to infer the structure and the leaf values. This regularization technique trades examples for bias estimates."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "id": "06f05613",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-03-31T11:18:35.160119Z",
+     "iopub.status.busy": "2025-03-31T11:18:35.159657Z",
+     "iopub.status.idle": "2025-03-31T11:20:25.146170Z",
+     "shell.execute_reply": "2025-03-31T11:20:25.144853Z"
+    },
+    "papermill": {
+     "duration": 109.996901,
+     "end_time": "2025-03-31T11:20:25.148686",
+     "exception": false,
+     "start_time": "2025-03-31T11:18:35.151785",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:0\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:35.667937124+00:00 kernel.cc:1214] Loading model from path /tmp/tmp_7c0mcuw/model/ with prefix 0288a69a0f5d4ade\n",
+      "[INFO 2025-03-31T11:18:35.672048826+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:1\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:36.951062329+00:00 kernel.cc:1214] Loading model from path /tmp/tmp6ta2q7rw/model/ with prefix 97b194ed81e2437d\n",
+      "[INFO 2025-03-31T11:18:36.968999008+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:2\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:37.89781257+00:00 kernel.cc:1214] Loading model from path /tmp/tmpvznjui66/model/ with prefix 3566037db31e4577\n",
+      "[INFO 2025-03-31T11:18:37.901996539+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:3\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:39.333383851+00:00 kernel.cc:1214] Loading model from path /tmp/tmp2ux1b3m8/model/ with prefix be967b9aae284476\n",
+      "[INFO 2025-03-31T11:18:39.358172944+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:4\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:40.375491038+00:00 kernel.cc:1214] Loading model from path /tmp/tmpbep97slf/model/ with prefix 611c94f35f9f4908\n",
+      "[INFO 2025-03-31T11:18:40.380877784+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:5\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:41.268347332+00:00 kernel.cc:1214] Loading model from path /tmp/tmp37_2pxyt/model/ with prefix 99c277c3d7b749a5\n",
+      "[INFO 2025-03-31T11:18:41.271341283+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:6\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:42.244129157+00:00 kernel.cc:1214] Loading model from path /tmp/tmpytp9i3by/model/ with prefix 765746620bdb4b01\n",
+      "[INFO 2025-03-31T11:18:42.251194551+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:7\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:43.588436709+00:00 kernel.cc:1214] Loading model from path /tmp/tmpme24_mg2/model/ with prefix cec4f399c5be4f96\n",
+      "[INFO 2025-03-31T11:18:43.607068036+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:8\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:44.659397849+00:00 kernel.cc:1214] Loading model from path /tmp/tmpoilt9qc3/model/ with prefix 8ea7fdeede584125\n",
+      "[INFO 2025-03-31T11:18:44.668260362+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:9\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:46.22974912+00:00 kernel.cc:1214] Loading model from path /tmp/tmpah7uzkcb/model/ with prefix fe156e13ceb74091\n",
+      "[INFO 2025-03-31T11:18:46.245051132+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:18:46.245108833+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:10\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:47.196193396+00:00 kernel.cc:1214] Loading model from path /tmp/tmp507yeiej/model/ with prefix a5f9c5d9331f485d\n",
+      "[INFO 2025-03-31T11:18:47.201666811+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:11\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:48.356105561+00:00 kernel.cc:1214] Loading model from path /tmp/tmp1yufe_qt/model/ with prefix 15c0bcb09f5a4950\n",
+      "[INFO 2025-03-31T11:18:48.369722923+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:12\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:49.299961595+00:00 kernel.cc:1214] Loading model from path /tmp/tmp6msq8st1/model/ with prefix 16209c8721c249fb\n",
+      "[INFO 2025-03-31T11:18:49.30555264+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:13\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:50.367950332+00:00 kernel.cc:1214] Loading model from path /tmp/tmpangydti1/model/ with prefix ee2557ca37e84510\n",
+      "[INFO 2025-03-31T11:18:50.378464957+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:14\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:51.312477159+00:00 kernel.cc:1214] Loading model from path /tmp/tmpj0_ifnwn/model/ with prefix 38011ae082cd4307\n",
+      "[INFO 2025-03-31T11:18:51.318215531+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:15\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:52.278531496+00:00 kernel.cc:1214] Loading model from path /tmp/tmpdwjfgf7e/model/ with prefix b6e0510141a14209\n",
+      "[INFO 2025-03-31T11:18:52.285606383+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:16\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:53.419709161+00:00 kernel.cc:1214] Loading model from path /tmp/tmp13rpjoh5/model/ with prefix 1bd5df4bd95845fb\n",
+      "[INFO 2025-03-31T11:18:53.431738221+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:17\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:54.559681608+00:00 kernel.cc:1214] Loading model from path /tmp/tmpx_cva6uu/model/ with prefix 66c0f8cf55514489\n",
+      "[INFO 2025-03-31T11:18:54.572016826+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:18\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:55.649552199+00:00 kernel.cc:1214] Loading model from path /tmp/tmpwrw_v9bp/model/ with prefix c219c40130c247f3\n",
+      "[INFO 2025-03-31T11:18:55.660379045+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:19\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:56.900602282+00:00 kernel.cc:1214] Loading model from path /tmp/tmpae3tve2g/model/ with prefix 30f171d065f64c92\n",
+      "[INFO 2025-03-31T11:18:56.917376355+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:18:56.917428652+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:20\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:58.083377165+00:00 kernel.cc:1214] Loading model from path /tmp/tmpjnth6n1f/model/ with prefix 4d61514169c1486b\n",
+      "[INFO 2025-03-31T11:18:58.097263248+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:21\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:59.016420374+00:00 kernel.cc:1214] Loading model from path /tmp/tmpyjqq6p5_/model/ with prefix 84c575c720134912\n",
+      "[INFO 2025-03-31T11:18:59.021240001+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:22\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:18:59.954087811+00:00 kernel.cc:1214] Loading model from path /tmp/tmp0g6xmr4a/model/ with prefix 212b7c2b94bf4783\n",
+      "[INFO 2025-03-31T11:18:59.959356098+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:23\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:00.962616139+00:00 kernel.cc:1214] Loading model from path /tmp/tmp49ds3ho3/model/ with prefix 5c387a8fede34382\n",
+      "[INFO 2025-03-31T11:19:00.970855709+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:24\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:01.928024377+00:00 kernel.cc:1214] Loading model from path /tmp/tmpmybv1g6m/model/ with prefix 8d9c334cea6b446e\n",
+      "[INFO 2025-03-31T11:19:01.933647137+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:25\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:03.021459441+00:00 kernel.cc:1214] Loading model from path /tmp/tmpvlk06zt7/model/ with prefix c73a70235c614247\n",
+      "[INFO 2025-03-31T11:19:03.032317887+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:26\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:04.093938529+00:00 kernel.cc:1214] Loading model from path /tmp/tmpc058topi/model/ with prefix d2c8612671b74547\n",
+      "[INFO 2025-03-31T11:19:04.10355331+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:27\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:05.069089445+00:00 kernel.cc:1214] Loading model from path /tmp/tmpyknprobz/model/ with prefix a380bbdd07d44d01\n",
+      "[INFO 2025-03-31T11:19:05.075213653+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:28\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:05.992377972+00:00 kernel.cc:1214] Loading model from path /tmp/tmpa7bajkkc/model/ with prefix ed5b855fd93645ca\n",
+      "[INFO 2025-03-31T11:19:05.997244882+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:29\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:07.115802863+00:00 kernel.cc:1214] Loading model from path /tmp/tmpt13n2mt4/model/ with prefix 59e5c1d4e18e4bf0\n",
+      "[INFO 2025-03-31T11:19:07.12788889+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:19:07.127929573+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:30\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:08.580043992+00:00 kernel.cc:1214] Loading model from path /tmp/tmpl2fiqh2w/model/ with prefix 9957986a6a6b47e9\n",
+      "[INFO 2025-03-31T11:19:08.605142156+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:31\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:10.164489707+00:00 kernel.cc:1214] Loading model from path /tmp/tmpp9jfb9tb/model/ with prefix 47c56907fe024f31\n",
+      "[INFO 2025-03-31T11:19:10.175248798+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:32\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:11.200769319+00:00 kernel.cc:1214] Loading model from path /tmp/tmpzk4e3c7q/model/ with prefix 61408085e99546d6\n",
+      "[INFO 2025-03-31T11:19:11.206772243+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:33\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:12.413518868+00:00 kernel.cc:1214] Loading model from path /tmp/tmpcjbk9u3r/model/ with prefix f2b9d1e096f64466\n",
+      "[INFO 2025-03-31T11:19:12.426534072+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:34\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:13.466669189+00:00 kernel.cc:1214] Loading model from path /tmp/tmp_j80jo62/model/ with prefix 10ab362b9d1d4106\n",
+      "[INFO 2025-03-31T11:19:13.475395237+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:35\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:14.471300215+00:00 kernel.cc:1214] Loading model from path /tmp/tmpa5eorjxq/model/ with prefix cb1246a26de24b48\n",
+      "[INFO 2025-03-31T11:19:14.478785884+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:36\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:15.621787182+00:00 kernel.cc:1214] Loading model from path /tmp/tmpzprufmqj/model/ with prefix 59494af10d264128\n",
+      "[INFO 2025-03-31T11:19:15.635317994+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:37\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:16.65744123+00:00 kernel.cc:1214] Loading model from path /tmp/tmplwxhhp03/model/ with prefix 41cca8a968b14b98\n",
+      "[INFO 2025-03-31T11:19:16.66594761+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:38\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:17.786161123+00:00 kernel.cc:1214] Loading model from path /tmp/tmptu3t5wc7/model/ with prefix 1222c688a00447f5\n",
+      "[INFO 2025-03-31T11:19:17.798866479+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:19:17.798926762+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:39\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:18.92891096+00:00 kernel.cc:1214] Loading model from path /tmp/tmpi2xfncja/model/ with prefix 952bc6ed554649c9\n",
+      "[INFO 2025-03-31T11:19:18.941229979+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:40\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:19.842585678+00:00 kernel.cc:1214] Loading model from path /tmp/tmp66rvfsov/model/ with prefix 51a6f440bdec4ca2\n",
+      "[INFO 2025-03-31T11:19:19.846831813+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:41\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:21.009805969+00:00 kernel.cc:1214] Loading model from path /tmp/tmpzp7b4c9t/model/ with prefix aba129567f914f5a\n",
+      "[INFO 2025-03-31T11:19:21.023920518+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:42\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:22.039806028+00:00 kernel.cc:1214] Loading model from path /tmp/tmp8kh7vlvm/model/ with prefix 793d7f2c63b6480e\n",
+      "[INFO 2025-03-31T11:19:22.048327731+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:43\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:23.298910838+00:00 kernel.cc:1214] Loading model from path /tmp/tmpeytf81hw/model/ with prefix 4e5713259ee14cdf\n",
+      "[INFO 2025-03-31T11:19:23.31502106+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:44\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:24.336392926+00:00 kernel.cc:1214] Loading model from path /tmp/tmp4xr9h4vq/model/ with prefix 11b1f3a28a3a4421\n",
+      "[INFO 2025-03-31T11:19:24.345168212+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:45\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:25.226690277+00:00 kernel.cc:1214] Loading model from path /tmp/tmpp1w47ubm/model/ with prefix 5c823d699a9f45ec\n",
+      "[INFO 2025-03-31T11:19:25.230069656+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:46\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:26.396162772+00:00 kernel.cc:1214] Loading model from path /tmp/tmpekjhi9st/model/ with prefix ed8a59caf183486d\n",
+      "[INFO 2025-03-31T11:19:26.409527379+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:47\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:27.564057231+00:00 kernel.cc:1214] Loading model from path /tmp/tmpb1adibte/model/ with prefix c6e0d13acfb8429c\n",
+      "[INFO 2025-03-31T11:19:27.576243053+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:48\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:28.482643511+00:00 kernel.cc:1214] Loading model from path /tmp/tmpv1ylsv9e/model/ with prefix 863d06fd447c4d49\n",
+      "[INFO 2025-03-31T11:19:28.486970513+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:19:28.487006937+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:49\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:29.465145148+00:00 kernel.cc:1214] Loading model from path /tmp/tmphfu_27ui/model/ with prefix 106268a141bb4dce\n",
+      "[INFO 2025-03-31T11:19:29.471677098+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:50\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:30.573448632+00:00 kernel.cc:1214] Loading model from path /tmp/tmp5r6em02k/model/ with prefix d843bb5425cb473b\n",
+      "[INFO 2025-03-31T11:19:30.584775043+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:51\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:31.771260536+00:00 kernel.cc:1214] Loading model from path /tmp/tmp0iyxvsdt/model/ with prefix 902b767e86f2458a\n",
+      "[INFO 2025-03-31T11:19:31.78559836+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:52\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:32.783102465+00:00 kernel.cc:1214] Loading model from path /tmp/tmpp57ijxf3/model/ with prefix dffda24c6fae4753\n",
+      "[INFO 2025-03-31T11:19:32.790408883+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:53\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:33.795097772+00:00 kernel.cc:1214] Loading model from path /tmp/tmp1r8fo3bq/model/ with prefix 47bd89cc0f714c3c\n",
+      "[INFO 2025-03-31T11:19:33.802160663+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:54\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:34.695263312+00:00 kernel.cc:1214] Loading model from path /tmp/tmpulxuqszk/model/ with prefix 8634359e9aa84163\n",
+      "[INFO 2025-03-31T11:19:34.698388529+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:55\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:35.866501589+00:00 kernel.cc:1214] Loading model from path /tmp/tmphpm4345o/model/ with prefix 621cd462fb29495b\n",
+      "[INFO 2025-03-31T11:19:35.880081147+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:56\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:37.510033643+00:00 kernel.cc:1214] Loading model from path /tmp/tmp4psoyk0r/model/ with prefix d332349df1f9420d\n",
+      "[INFO 2025-03-31T11:19:37.522237757+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:57\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:38.515647348+00:00 kernel.cc:1214] Loading model from path /tmp/tmp5hnt518k/model/ with prefix 863619752b564bfa\n",
+      "[INFO 2025-03-31T11:19:38.520031653+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:19:38.520070185+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:58\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:39.506779455+00:00 kernel.cc:1214] Loading model from path /tmp/tmpnfu_napg/model/ with prefix d5b0cb39176a4337\n",
+      "[INFO 2025-03-31T11:19:39.513074679+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:59\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:40.556934173+00:00 kernel.cc:1214] Loading model from path /tmp/tmpmyg13x9t/model/ with prefix 978cf169f9f147fb\n",
+      "[INFO 2025-03-31T11:19:40.565841264+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:60\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:41.643568595+00:00 kernel.cc:1214] Loading model from path /tmp/tmpvgc2kzq0/model/ with prefix 893be75b2b544a06\n",
+      "[INFO 2025-03-31T11:19:41.652812996+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:61\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:42.595743476+00:00 kernel.cc:1214] Loading model from path /tmp/tmpabjb2qoy/model/ with prefix e21f313c1f4448e8\n",
+      "[INFO 2025-03-31T11:19:42.600473946+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:62\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:44.192650985+00:00 kernel.cc:1214] Loading model from path /tmp/tmpe9y675_i/model/ with prefix b01466947af24804\n",
+      "[INFO 2025-03-31T11:19:44.217115969+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:63\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:45.252363315+00:00 kernel.cc:1214] Loading model from path /tmp/tmpdsv85wgz/model/ with prefix 809fbf77a1734969\n",
+      "[INFO 2025-03-31T11:19:45.26091053+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:64\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:46.254507857+00:00 kernel.cc:1214] Loading model from path /tmp/tmptdmkkmac/model/ with prefix 80e30e1cfc34400b\n",
+      "[INFO 2025-03-31T11:19:46.261938428+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:65\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:47.18187616+00:00 kernel.cc:1214] Loading model from path /tmp/tmp5wlhs44c/model/ with prefix fdf2a7d9784943ac\n",
+      "[INFO 2025-03-31T11:19:47.186425424+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:66\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:48.14023151+00:00 kernel.cc:1214] Loading model from path /tmp/tmp3wzb8a2o/model/ with prefix 74eae96998b44c80\n",
+      "[INFO 2025-03-31T11:19:48.146125208+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:67\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:49.421579076+00:00 kernel.cc:1214] Loading model from path /tmp/tmpf5psuy50/model/ with prefix 4eb39dbe56204952\n",
+      "[INFO 2025-03-31T11:19:49.439064934+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:19:49.439120919+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:68\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:50.554607879+00:00 kernel.cc:1214] Loading model from path /tmp/tmpjfv68j7r/model/ with prefix 730293dec5464e3d\n",
+      "[INFO 2025-03-31T11:19:50.565844281+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:69\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:51.529869709+00:00 kernel.cc:1214] Loading model from path /tmp/tmpjo49p1fs/model/ with prefix fa1aa9f0aef1464f\n",
+      "[INFO 2025-03-31T11:19:51.535991388+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:70\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:52.56255314+00:00 kernel.cc:1214] Loading model from path /tmp/tmp53k6pyhk/model/ with prefix 4b17a4c9feaa4605\n",
+      "[INFO 2025-03-31T11:19:52.571004358+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:71\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:53.639451269+00:00 kernel.cc:1214] Loading model from path /tmp/tmpmukn479i/model/ with prefix a510f02b989e4ee9\n",
+      "[INFO 2025-03-31T11:19:53.646651398+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:72\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:54.873530593+00:00 kernel.cc:1214] Loading model from path /tmp/tmpxh6bp6ud/model/ with prefix 0488a1ec10d64d94\n",
+      "[INFO 2025-03-31T11:19:54.8884295+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:73\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:55.901312572+00:00 kernel.cc:1214] Loading model from path /tmp/tmpg4ih35v6/model/ with prefix 00fbd60fc7574713\n",
+      "[INFO 2025-03-31T11:19:55.908007887+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:74\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:57.054862762+00:00 kernel.cc:1214] Loading model from path /tmp/tmp3rcp3mru/model/ with prefix d26a90807a2f4c81\n",
+      "[INFO 2025-03-31T11:19:57.065747544+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:75\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:58.086515003+00:00 kernel.cc:1214] Loading model from path /tmp/tmpf4cewhiu/model/ with prefix 116e2fd4823e4db0\n",
+      "[INFO 2025-03-31T11:19:58.094228684+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:76\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:19:59.037309792+00:00 kernel.cc:1214] Loading model from path /tmp/tmpc7ivarlv/model/ with prefix 744bb53fc6334d90\n",
+      "[INFO 2025-03-31T11:19:59.041094586+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:77\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:00.004246632+00:00 kernel.cc:1214] Loading model from path /tmp/tmpc_p2y_4m/model/ with prefix e9e724f7844847a6\n",
+      "[INFO 2025-03-31T11:20:00.008724312+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:20:00.008777572+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:78\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:01.028166348+00:00 kernel.cc:1214] Loading model from path /tmp/tmpfd1fpxeq/model/ with prefix 604c7380a2874be6\n",
+      "[INFO 2025-03-31T11:20:01.034425899+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:79\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:02.038975503+00:00 kernel.cc:1214] Loading model from path /tmp/tmp4l64v2q9/model/ with prefix 49d7b4e1efd44015\n",
+      "[INFO 2025-03-31T11:20:02.045651562+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:80\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:03.19204454+00:00 kernel.cc:1214] Loading model from path /tmp/tmpy6d3fcbf/model/ with prefix 4c4f787d9e894364\n",
+      "[INFO 2025-03-31T11:20:03.201246851+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:81\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:04.305137068+00:00 kernel.cc:1214] Loading model from path /tmp/tmpyu7gks97/model/ with prefix 4619e6d6e2d34e5b\n",
+      "[INFO 2025-03-31T11:20:04.315393932+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:82\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:05.340819273+00:00 kernel.cc:1214] Loading model from path /tmp/tmpye7ydp4c/model/ with prefix 558476b5653848a5\n",
+      "[INFO 2025-03-31T11:20:05.349871963+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:83\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:06.380458404+00:00 kernel.cc:1214] Loading model from path /tmp/tmpt6sut29v/model/ with prefix 41ff5b3f0a8b4201\n",
+      "[INFO 2025-03-31T11:20:06.388510274+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:84\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:08.282886068+00:00 kernel.cc:1214] Loading model from path /tmp/tmp1_zdqnb8/model/ with prefix 0a910ab332c34bb9\n",
+      "[INFO 2025-03-31T11:20:08.300642737+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:85\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:09.348967083+00:00 kernel.cc:1214] Loading model from path /tmp/tmp9pwq3zlx/model/ with prefix 9390f8b2c3024ea0\n",
+      "[INFO 2025-03-31T11:20:09.355550326+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:86\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:10.596494115+00:00 kernel.cc:1214] Loading model from path /tmp/tmptgk7_eav/model/ with prefix fd56a9cc0b854bc3\n",
+      "[INFO 2025-03-31T11:20:10.612388585+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:20:10.61244763+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:87\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:11.896873601+00:00 kernel.cc:1214] Loading model from path /tmp/tmpsir81l_6/model/ with prefix ee6a162b9a584511\n",
+      "[INFO 2025-03-31T11:20:11.914240783+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:88\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:13.022450569+00:00 kernel.cc:1214] Loading model from path /tmp/tmpzle47tb3/model/ with prefix dd06c4dc7b364723\n",
+      "[INFO 2025-03-31T11:20:13.033535788+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:89\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:13.995811393+00:00 kernel.cc:1214] Loading model from path /tmp/tmpd0nq335w/model/ with prefix 95e94d63ff224c1f\n",
+      "[INFO 2025-03-31T11:20:14.000609108+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:90\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:15.158392165+00:00 kernel.cc:1214] Loading model from path /tmp/tmpyr_61ahs/model/ with prefix c6e825b1d02740f2\n",
+      "[INFO 2025-03-31T11:20:15.169434675+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:91\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:16.180114678+00:00 kernel.cc:1214] Loading model from path /tmp/tmp_n82nqrx/model/ with prefix 720a23c4aa9a4a1f\n",
+      "[INFO 2025-03-31T11:20:16.186607799+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:92\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:17.420929073+00:00 kernel.cc:1214] Loading model from path /tmp/tmp5dudsxur/model/ with prefix aa5a5cc344f04dd5\n",
+      "[INFO 2025-03-31T11:20:17.437348043+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:93\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:18.495992243+00:00 kernel.cc:1214] Loading model from path /tmp/tmplal575sl/model/ with prefix 143f5aa2fea842fe\n",
+      "[INFO 2025-03-31T11:20:18.505238075+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:94\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:19.469525373+00:00 kernel.cc:1214] Loading model from path /tmp/tmp_4ln9uxx/model/ with prefix 6129acf2ae1d4e30\n",
+      "[INFO 2025-03-31T11:20:19.475675147+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:95\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:20.516456809+00:00 kernel.cc:1214] Loading model from path /tmp/tmpn16oove6/model/ with prefix 825dd793065d420d\n",
+      "[INFO 2025-03-31T11:20:20.524226011+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:96\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:21.588659503+00:00 kernel.cc:1214] Loading model from path /tmp/tmpr0rgwla9/model/ with prefix 8212e39f17c04669\n",
+      "[INFO 2025-03-31T11:20:21.598165837+00:00 abstract_model.cc:1311] Engine \"GradientBoostedTreesQuickScorerExtended\" built\n",
+      "[INFO 2025-03-31T11:20:21.598209289+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:97\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:22.539436021+00:00 kernel.cc:1214] Loading model from path /tmp/tmpw8b3upmc/model/ with prefix bfca2c31c4104188\n",
+      "[INFO 2025-03-31T11:20:22.544339304+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:98\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:23.570230586+00:00 kernel.cc:1214] Loading model from path /tmp/tmp2zkx9__k/model/ with prefix bddd98057d4c4a47\n",
+      "[INFO 2025-03-31T11:20:23.57753688+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "i:99\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[INFO 2025-03-31T11:20:24.727734158+00:00 kernel.cc:1214] Loading model from path /tmp/tmp2tdsldop/model/ with prefix 4ed0fa3e1a4b4faa\n",
+      "[INFO 2025-03-31T11:20:24.74129831+00:00 kernel.cc:1046] Use fast generic engine\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Submission exported to /kaggle/working/submission.csv\n"
+     ]
+    }
+   ],
+   "source": [
+    "predictions = None\n",
+    "num_predictions = 0\n",
+    "\n",
+    "for i in range(100):\n",
+    "    print(f\"i:{i}\")\n",
+    "    # Possible models: GradientBoostedTreesModel or RandomForestModel\n",
+    "    model = tfdf.keras.GradientBoostedTreesModel(\n",
+    "        verbose=0, # Very few logs\n",
+    "        features=[tfdf.keras.FeatureUsage(name=n) for n in input_features],\n",
+    "        exclude_non_specified_features=True, # Only use the features in \"features\"\n",
+    "\n",
+    "        #min_examples=1,\n",
+    "        #categorical_algorithm=\"RANDOM\",\n",
+    "        ##max_depth=4,\n",
+    "        #shrinkage=0.05,\n",
+    "        ##num_candidate_attributes_ratio=0.2,\n",
+    "        #split_axis=\"SPARSE_OBLIQUE\",\n",
+    "        #sparse_oblique_normalization=\"MIN_MAX\",\n",
+    "        #sparse_oblique_num_projections_exponent=2.0,\n",
+    "        #num_trees=2000,\n",
+    "        ##validation_ratio=0.0,\n",
+    "        random_seed=i,\n",
+    "        honest=True,\n",
+    "    )\n",
+    "    model.fit(train_ds)\n",
+    "    \n",
+    "    sub_predictions = model.predict(serving_ds, verbose=0)[:,0]\n",
+    "    if predictions is None:\n",
+    "        predictions = sub_predictions\n",
+    "    else:\n",
+    "        predictions += sub_predictions\n",
+    "    num_predictions += 1\n",
+    "\n",
+    "predictions/=num_predictions\n",
+    "\n",
+    "kaggle_predictions = pd.DataFrame({\n",
+    "        \"PassengerId\": tf_test[\"PassengerId\"],\n",
+    "        \"Survived\": (predictions >= 0.5).astype(int)\n",
+    "    })\n",
+    "\n",
+    "make_submission(kaggle_predictions)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "259e6efe",
+   "metadata": {
+    "papermill": {
+     "duration": 0.016242,
+     "end_time": "2025-03-31T11:20:25.181418",
+     "exception": false,
+     "start_time": "2025-03-31T11:20:25.165176",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "# What is next\n",
+    "\n",
+    "If you want to learn more about TensorFlow Decision Forests and its advanced features, you can follow the official documentation [here](https://www.tensorflow.org/decision_forests) "
+   ]
+  }
+ ],
+ "metadata": {
+  "kaggle": {
+   "accelerator": "none",
+   "dataSources": [
+    {
+     "databundleVersionId": 26502,
+     "sourceId": 3136,
+     "sourceType": "competition"
+    }
+   ],
+   "dockerImageVersionId": 30458,
+   "isGpuEnabled": false,
+   "isInternetEnabled": true,
+   "language": "python",
+   "sourceType": "notebook"
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.12"
+  },
+  "papermill": {
+   "default_parameters": {},
+   "duration": 260.343971,
+   "end_time": "2025-03-31T11:20:28.583033",
+   "environment_variables": {},
+   "exception": null,
+   "input_path": "__notebook__.ipynb",
+   "output_path": "__notebook__.ipynb",
+   "parameters": {},
+   "start_time": "2025-03-31T11:16:08.239062",
+   "version": "2.4.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
